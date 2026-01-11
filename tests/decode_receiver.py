@@ -79,26 +79,35 @@ def decode_frame(data: bytes) -> Optional[Dict[str, Any]]:
         utc_time = gps_time - timedelta(seconds=leap_seconds)
         result['utc_time'] = utc_time
         
-        interval, iod = struct.unpack('>HB', data[offset:offset+3])
-        offset += 3
+        interval = data[offset]  # 按设计文档：1字节
+        offset += 1
         result['interval'] = interval
-        result['iod'] = iod
-        offset += 1  # 跳过1字节padding，对应encoder中的'x'
         
-        # === Body ===
+        iod = data[offset]
+        offset += 1
+        result['iod'] = iod
+        
+        # === Body（按设计文档） ===
+        # 1. 模型参考高和地球半径（U16，km）
+        ref_height, base_radius = struct.unpack('>HH', data[offset:offset+4])
+        offset += 4
+        result['height'] = float(ref_height)
+        result['radius'] = float(base_radius)
+        print(f"  [DEBUG] After height/radius: offset={offset}")
+        
+        # 2. 模型代号（U8）
         model_type = data[offset]
         offset += 1
         result['model_type'] = model_type
         print(f"  [DEBUG] After model_type: offset={offset}")
         
-        radius_m, height_m, coef_cnt = struct.unpack('>iiI', data[offset:offset+12])
-        offset += 12
-        result['radius'] = radius_m / 1000.0  # 转换回千米
-        result['height'] = height_m / 1000.0  # 转换回千米
+        # 3. 阶数N,M（U8，这里简化为系数个数）
+        coef_cnt = data[offset]
+        offset += 1
         result['coef_cnt'] = coef_cnt
-        print(f"  [DEBUG] After radius/height/coef_cnt: offset={offset}, coef_cnt={coef_cnt}")
+        print(f"  [DEBUG] After coef_cnt: offset={offset}, coef_cnt={coef_cnt}")
         
-        # 读取系数
+        # 4. 系数列表（I32，0.001 TECU）
         coefs = []
         for _ in range(coef_cnt):
             coef_int = struct.unpack('>i', data[offset:offset+4])[0]
@@ -108,19 +117,20 @@ def decode_frame(data: bytes) -> Optional[Dict[str, Any]]:
         result['coefs'] = coefs
         print(f"  [DEBUG] After coefficients: offset={offset}")
         
-        # 读取网格定义（微度格式，I32）
-        lat1_udeg, lat2_udeg, dlat_udeg = struct.unpack('>iii', data[offset:offset+12])
-        offset += 12
-        lon1_udeg, lon2_udeg, dlon_udeg = struct.unpack('>iii', data[offset:offset+12])
-        offset += 12
+        # 5. 网格定义（I16×4 + U8×2，单位0.1度）
+        lon1_d1, lat1_d1, lon2_d1, lat2_d1 = struct.unpack('>hhhh', data[offset:offset+8])
+        offset += 8
+        dlat_d1, dlon_d1 = struct.unpack('>BB', data[offset:offset+2])
+        offset += 2
         print(f"  [DEBUG] After grid definition: offset={offset}")
-        # 微度转换为度
-        result['lat1'] = lat1_udeg / 1e6
-        result['lat2'] = lat2_udeg / 1e6
-        result['dlat'] = dlat_udeg / 1e6
-        result['lon1'] = lon1_udeg / 1e6
-        result['lon2'] = lon2_udeg / 1e6
-        result['dlon'] = dlon_udeg / 1e6
+        
+        # 转换为度
+        result['lon1'] = lon1_d1 / 10.0
+        result['lat1'] = lat1_d1 / 10.0
+        result['lon2'] = lon2_d1 / 10.0
+        result['lat2'] = lat2_d1 / 10.0
+        result['dlat'] = dlat_d1 / 10.0
+        result['dlon'] = dlon_d1 / 10.0
         
         # 计算网格尺寸
         lat1 = result['lat1']
@@ -129,24 +139,24 @@ def decode_frame(data: bytes) -> Optional[Dict[str, Any]]:
         lon1 = result['lon1']
         lon2 = result['lon2']
         dlon = result['dlon']
-        nlat = int((lat1 - lat2) / abs(dlat)) + 1
-        nlon = int((lon2 - lon1) / abs(dlon)) + 1
+        nlat = int(abs(lat1 - lat2) / dlat + 0.5) + 1
+        nlon = int(abs(lon2 - lon1) / dlon + 0.5) + 1
         result['nlat'] = nlat
         result['nlon'] = nlon
         
-        # 读取grid_total验证字段
+        # 6. 网格总数(U16)
         grid_total = struct.unpack('>H', data[offset:offset+2])[0]
         offset += 2
         result['grid_total'] = grid_total
+        print(f"  [DEBUG] After grid_total: offset={offset}, grid_total={grid_total}, expected={nlat}x{nlon}={nlat*nlon}")
         
-        # RMS压缩数据（调试：打印offset）
-        crc_offset = len(data) - 4  # 应该是726
-        print(f"  [DEBUG] 读取RMS前: offset={offset}, crc_offset={crc_offset}")
+        # 7. RMS压缩数据
+        crc_offset = len(data) - 4
         rms_size = crc_offset - offset
-        print(f"  [DEBUG] RMS大小: {rms_size}字节")
+        print(f"  [DEBUG] RMS: crc_offset={crc_offset}, rms_size={rms_size}, will read from offset {offset} to {crc_offset}")
         rms_compressed = data[offset:offset+rms_size]
         offset += rms_size
-        print(f"  [DEBUG] 读取RMS后: offset={offset}")
+        print(f"  [DEBUG] After RMS: offset={offset}")
         result['rms_compressed'] = rms_compressed
         result['rms_size'] = rms_size
         

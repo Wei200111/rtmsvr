@@ -18,21 +18,21 @@ def encode_frame(data: Dict[str, Any], iod: int) -> bytes:
     # 1. 编码Body部分（用于计算长度）
     body = _encode_body(data)
     
-    # 2. 编码Header
+    # 2. 编码Header（严格按照设计文档13字节）
     msg_id = 0x02
-    length = 15 + len(body) + 4  # Header(15B) + Body + Tail(4B)
+    length = 13 + len(body) + 4  # Header(13B) + Body + Tail(4B)
     week, sow = utc2gps(data['time'])
     interval = 15  # 建模间隔15分钟
     
     header = struct.pack(
-        '>HBHHIHBx',
-        0x01AA,       # 魔数
-        msg_id,       # 消息ID
-        length,       # 帧长度
-        week,         # GPS周
-        sow,          # 秒数SOW
-        interval,     # 建模间隔
-        iod           # IOD（绑定数据内容）
+        '>HBHHIB B',
+        0x01AA,       # 魔数 2字节
+        msg_id,       # 消息ID 1字节
+        length,       # 帧长度 2字节
+        week,         # GPS周 2字节
+        sow,          # GPS秒 4字节
+        interval,     # 建模间隔 1字节（按设计文档）
+        iod           # IOD 1字节
     )
     
     # 3. 计算CRC（从消息ID到Body结束）
@@ -46,36 +46,40 @@ def encode_frame(data: Dict[str, Any], iod: int) -> bytes:
 
 
 def _encode_body(data: Dict[str, Any]) -> bytes:
-    """编码Body部分
+    """编码Body部分(严格按照设计文档)
     
     Body结构:
-    - U8 model_type=0
-    - I32 base_radius（米）
-    - I32 ref_height（米）
-    - U32 coef_count
-    - I32[coef_count] coefficients
-    - I32 lat1, lat2, dlat（微度）
-    - I32 lon1, lon2, dlon（微度）
-    - U16 grid_total（验证用）
-    - U8[] rms_compressed（两个4-bit索引打包为1字节）
+    - U16 模型参考高(km)450
+    - U16 地球半径(km)6371
+    - U8  模型代号 0
+    - U8  阶数N,M
+    - I32[K] 系数列表(0.001 TECU)
+    - I16 起始经度(0.1度)
+    - I16 起始纬度(0.1度)
+    - I16 截止经度(0.1度)
+    - I16 截止纬度(0.1度)
+    - U8  纬度间隔(0.1度)
+    - U8  经度间隔(0.1度)
+    - U16 网格总数
+    - U8[] RMS压缩数据
     """
     body = bytearray()
     
-    # 1. Model type
+    # 1. 模型参考高和地球半径(U16,单位km)
+    ref_height = int(data['hgt'] + 0.5)
+    base_radius = int(data['base_r'] + 0.5)
+    body.extend(struct.pack('>HH', ref_height, base_radius))
+    
+    # 2. 模型代号(U8,固定0)
     body.extend(struct.pack('>B', 0))
     
-    # 2. Model parameters（添加epsilon避免截断误差）
-    base_r_m = int(data['base_r'] * 1000 + 1e-9)
-    hgt_m = int(data['hgt'] * 1000 + 1e-9)
-    body.extend(struct.pack('>ii', base_r_m, hgt_m))
-    
-    # 3. Coefficients（TECU → 0.001 TECU整数）
+    # 3. 阶数(U8,简化为系数个数K)
     coef_cnt = data['coef_cnt']
-    body.extend(struct.pack('>I', coef_cnt))
+    body.extend(struct.pack('>B', coef_cnt))
     
+    # 4. 系数列表(I32,单位0.001 TECU)
     coefs_int = []
     for c in data['coefs']:
-        # 转换为0.001 TECU单位，添加epsilon避免截断
         val = c * 1000
         if val >= 0:
             val = int(val + 1e-9)
@@ -85,36 +89,35 @@ def _encode_body(data: Dict[str, Any]) -> bytes:
     
     body.extend(struct.pack(f'>{coef_cnt}i', *coefs_int))
     
-    # 4. Grid definition（度 → 微度）
+    # 5. 网格定义(I16x4 + U8x2,单位0.1度)
     lat1, lat2, dlat = data['lat']
     lon1, lon2, dlon = data['lon']
     
-    # 对每个值添加epsilon避免截断，注意符号
-    # GIM格式中纬度从北向南，dlat为负值，但协议中间隔应使用绝对值
-    lat1_udeg = int(lat1 * 1e6 + (1e-9 if lat1 >= 0 else -1e-9))
-    lat2_udeg = int(lat2 * 1e6 + (1e-9 if lat2 >= 0 else -1e-9))
-    dlat_udeg = int(abs(dlat) * 1e6 + 1e-9)  # 使用绝对值
-    lon1_udeg = int(lon1 * 1e6 + (1e-9 if lon1 >= 0 else -1e-9))
-    lon2_udeg = int(lon2 * 1e6 + (1e-9 if lon2 >= 0 else -1e-9))
-    dlon_udeg = int(abs(dlon) * 1e6 + 1e-9)  # 使用绝对值
+    lon1_d1 = int(lon1 * 10 + (0.5 if lon1 >= 0 else -0.5))
+    lat1_d1 = int(lat1 * 10 + (0.5 if lat1 >= 0 else -0.5))
+    lon2_d1 = int(lon2 * 10 + (0.5 if lon2 >= 0 else -0.5))
+    lat2_d1 = int(lat2 * 10 + (0.5 if lat2 >= 0 else -0.5))
     
-    body.extend(struct.pack('>iiiiii', 
-                           lat1_udeg, lat2_udeg, dlat_udeg,
-                           lon1_udeg, lon2_udeg, dlon_udeg))
+    dlat_d1 = int(abs(dlat) * 10 + 0.5)
+    dlon_d1 = int(abs(dlon) * 10 + 0.5)
     
-    # 5. Compress RMS
+    body.extend(struct.pack('>hhhhBB', 
+                           lon1_d1, lat1_d1, lon2_d1, lat2_d1,
+                           dlat_d1, dlon_d1))
+    
+    # 6. 网格总数(U16)
     rms_matrix = data['rms']
-    rms_compressed = _compress_rms(rms_matrix)
-    
-    # 6. Grid total（验证用）
-    total_points = len(rms_compressed) * 2  # 每字节包含2个点
-    # 如果总点数为奇数，最后一个字节只有高4位有效
     if len(rms_matrix) > 0 and len(rms_matrix[0]) > 0:
         nlat = len(rms_matrix)
         nlon = len(rms_matrix[0])
         total_points = nlat * nlon
+    else:
+        total_points = 0
     
     body.extend(struct.pack('>H', total_points))
+    
+    # 7. RMS压缩数据
+    rms_compressed = _compress_rms(rms_matrix)
     body.extend(rms_compressed)
     
     return bytes(body)
