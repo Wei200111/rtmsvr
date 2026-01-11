@@ -33,7 +33,8 @@ def parse_inx(path: str) -> Dict[str, Any]:
         'hgt': 450.0,
         'lat': (55.0, 25.0, -1.0),
         'lon': (95.0, 135.0, 1.0),
-        'rms': []
+        'rms': [],
+        'interval': 900  # 默认15分钟（单位：秒）
     }
     
     try:
@@ -75,6 +76,12 @@ def parse_inx(path: str) -> Dict[str, Any]:
         elif in_header and 'LON1' in line and 'LON2' in line:
             parts = line.split()
             result['lon'] = (float(parts[0]), float(parts[1]), float(parts[2]))
+        
+        # 解析INTERVAL (仅在Header中)
+        elif in_header and 'INTERVAL' in line:
+            parts = line.split()
+            if parts and parts[0].isdigit():
+                result['interval'] = int(parts[0])  # 单位：秒
         
         # 解析COEFFICIENTS块
         elif 'COEFFICIENTS START' in line:

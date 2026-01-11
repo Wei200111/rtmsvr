@@ -61,9 +61,10 @@ def decode_frame(data: bytes) -> Optional[Dict[str, Any]]:
             return None
         result['frame_len'] = frame_len
         
-        gps_week, gps_sow = struct.unpack('>HI', data[offset:offset+6])
+        gps_week, gps_sow_ms = struct.unpack('>HI', data[offset:offset+6])
         offset += 6
         result['gps_week'] = gps_week
+        gps_sow = gps_sow_ms / 1000.0  # 单位0.001秒，需除以1000
         result['gps_sow'] = gps_sow
         
         # 转换GPS时间为UTC
@@ -101,11 +102,16 @@ def decode_frame(data: bytes) -> Optional[Dict[str, Any]]:
         result['model_type'] = model_type
         print(f"  [DEBUG] After model_type: offset={offset}")
         
-        # 3. 阶数N,M（U8，这里简化为系数个数）
-        coef_cnt = data[offset]
+        # 3. 阶数N,M（U8，高4位=N，低4位=M）
+        order_byte = data[offset]
         offset += 1
+        N = (order_byte >> 4) & 0x0F
+        M = order_byte & 0x0F
+        coef_cnt = (N + 1) * (M + 1)  # 系数个数 = (N+1) * (M+1)
+        result['N'] = N
+        result['M'] = M
         result['coef_cnt'] = coef_cnt
-        print(f"  [DEBUG] After coef_cnt: offset={offset}, coef_cnt={coef_cnt}")
+        print(f"  [DEBUG] After order: offset={offset}, N={N}, M={M}, coef_cnt={coef_cnt}")
         
         # 4. 系数列表（I32，0.001 TECU）
         coefs = []
@@ -223,8 +229,9 @@ def print_decoded(decoded: Dict[str, Any], compare_file: Optional[str] = None):
     
     print(f"\n[Body - 模型参数]")
     print(f"  模型类型: {decoded['model_type']}")
-    print(f"  地球半径: {decoded['radius']} 米 ({decoded['radius']/1000} km)")
-    print(f"  参考高度: {decoded['height']} 米 ({decoded['height']/1000} km)")
+    print(f"  参考高度: {decoded['height']} km")
+    print(f"  地球半径: {decoded['radius']} km")
+    print(f"  阶数(N,M): ({decoded['N']}, {decoded['M']})")
     print(f"  系数个数: {decoded['coef_cnt']}")
     
     print(f"\n[Body - 多项式系数] (前5个)")

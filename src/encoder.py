@@ -22,7 +22,8 @@ def encode_frame(data: Dict[str, Any], iod: int) -> bytes:
     msg_id = 0x02
     length = 13 + len(body) + 4  # Header(13B) + Body + Tail(4B)
     week, sow = utc2gps(data['time'])
-    interval = 15  # 建模间隔15分钟
+    sow = int(sow * 1000)  # 单位0.001秒，需乘1000
+    interval = data.get('interval', 900) // 60  # 从data读取（秒）转换为分钟
     
     header = struct.pack(
         '>HBHHIBB',
@@ -49,8 +50,8 @@ def _encode_body(data: Dict[str, Any]) -> bytes:
     """编码Body部分(严格按照设计文档)
     
     Body结构:
-    - U16 模型参考高(km)450
     - U16 地球半径(km)6371
+    - U16 模型参考高(km)450
     - U8  模型代号 0
     - U8  阶数N,M
     - I32[K] 系数列表(0.001 TECU)
@@ -65,17 +66,21 @@ def _encode_body(data: Dict[str, Any]) -> bytes:
     """
     body = bytearray()
     
-    # 1. 模型参考高和地球半径(U16,单位km)
-    ref_height = int(data['hgt'] + 0.5)
+    # 1. 模型参考高和地球半径(U16,单位km) - 按照帧体顺序！
     base_radius = int(data['base_r'] + 0.5)
+    ref_height = int(data['hgt'] + 0.5)
     body.extend(struct.pack('>HH', ref_height, base_radius))
     
     # 2. 模型代号(U8,固定0)
     body.extend(struct.pack('>B', 0))
     
-    # 3. 阶数(U8,简化为系数个数K)
+    # 3. 阶数(U8,高4位=N,低4位=M)
+    # 直接使用parser.py解析的order字段
+    N, M = data['order']
+    order_byte = (N << 4) | M
+    body.extend(struct.pack('>B', order_byte))
+    
     coef_cnt = data['coef_cnt']
-    body.extend(struct.pack('>B', coef_cnt))
     
     # 4. 系数列表(I32,单位0.001 TECU)
     coefs_int = []

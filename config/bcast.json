@@ -1,6 +1,6 @@
 {
   "file_watcher": {
-    "watch_dir": "e:/rtm/rtmodel5window/vminx",
+    "watch_dir": "E:/rtm/rtmodel5window/bofa/rtmsvr/lib",
     "file_pattern": "*.inx"
   },
   "protocol": {
