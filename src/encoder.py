@@ -25,13 +25,13 @@ def encode_frame(data: Dict[str, Any], iod: int) -> bytes:
     interval = 15  # 建模间隔15分钟
     
     header = struct.pack(
-        '>HBHHIB B',
+        '>HBHHIBB',
         0x01AA,       # 魔数 2字节
         msg_id,       # 消息ID 1字节
         length,       # 帧长度 2字节
         week,         # GPS周 2字节
         sow,          # GPS秒 4字节
-        interval,     # 建模间隔 1字节（按设计文档）
+        interval,     # 建模间隔 1字节
         iod           # IOD 1字节
     )
     
